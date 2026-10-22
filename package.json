@@ -1,0 +1,53 @@
+{
+  "name": "tabelog-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for Tabelog (食べログ): search restaurants, check availability, and book with a two-step confirm, through your own Chrome.",
+  "main": "dist/cli.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test",
+    "prepublishOnly": "npm run check && npm run build",
+    "start": "node dist/cli.js",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "tabelog",
+    "食べログ",
+    "restaurant",
+    "booking",
+    "claude",
+    "codex",
+    "playwright"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "node-html-parser": "^7.0.1",
+    "playwright-core": "^1.56.1",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "type": "module",
+  "bin": {
+    "tabelog-mcp": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.10"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ingrid-wu/tabelog-mcp.git"
+  }
+}
