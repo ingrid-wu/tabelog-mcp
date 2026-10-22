@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
   isBlockedPage,
+  isChallengePage,
   parseAreaSuggestions,
   parseCalendar,
   parseLoginState,
@@ -101,7 +102,9 @@ describe("area suggestions", () => {
   });
 });
 
-test("recognizes Cloudflare's block page", () => {
+test("recognizes Cloudflare's check and Tabelog's block page", () => {
+  expect(isChallengePage("しばらくお待ちください...")).toBe(true);
+  expect(isChallengePage("焼肉うしごろ 銀座店のご予約 | 食べログ")).toBe(false);
   expect(isBlockedPage("<title>現在アクセスが集中しています [食べログ]</title>")).toBe(true);
   expect(isBlockedPage(fixture("restaurant.html"))).toBe(false);
 });

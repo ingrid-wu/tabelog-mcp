@@ -7,11 +7,25 @@ import { mkdirSync } from "node:fs";
 import { type BrowserContext, chromium, type Page, type Route } from "playwright-core";
 import { TabelogError } from "../errors.ts";
 import type { Logger } from "../logger.ts";
-import { isBlockedPage } from "../tabelog/parse.ts";
+import { isBlockedPage, isChallengePage } from "../tabelog/parse.ts";
 import { origin } from "../tabelog/urls.ts";
 
-/** Hosts the browser may load while the server drives it. Everything else (ads, trackers) is blocked. */
-const automatedHosts = [/(^|\.)tabelog\.com$/, /(^|\.)k-img\.com$/, /^www\.gstatic\.com$/, /^www\.google\.com$/, /^www\.recaptcha\.net$/];
+/**
+ * Hosts the browser may load while the server drives it. Everything else (ads,
+ * trackers) is blocked. challenges.cloudflare.com runs the "please wait" check
+ * Cloudflare shows new visitors; blocking it turns that check into a 403.
+ */
+const automatedHosts = [
+  /(^|\.)tabelog\.com$/,
+  /(^|\.)k-img\.com$/,
+  /^challenges\.cloudflare\.com$/,
+  /^www\.gstatic\.com$/,
+  /^www\.google\.com$/,
+  /^www\.recaptcha\.net$/,
+];
+
+/** How long a normal browser may take to pass Cloudflare's check. */
+const challengeWaitMs = 20_000;
 const blockedResourceTypes = new Set(["image", "media", "font"]);
 
 const offScreen = { left: -2400, top: -2400 } as const;
@@ -57,11 +71,18 @@ export class BrowserSession {
     const page = await this.ensurePage(tab);
     await this.pace();
     const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    let status = response?.status() ?? null;
+    if (isChallengePage(await page.title())) {
+      // The browser runs the check itself and reloads the page; wait for that.
+      await page.waitForFunction(() => !/しばらくお待ちください|Just a moment/.test(document.title), undefined, { timeout: challengeWaitMs }).catch(() => undefined);
+      await page.waitForLoadState("domcontentloaded").catch(() => undefined);
+      status = isChallengePage(await page.title()) ? 403 : 200;
+    }
     const html = await page.content();
-    if (response?.status() === 403 || isBlockedPage(html)) {
+    if (status === 403 || isBlockedPage(html)) {
       throw new TabelogError("BLOCKED", "Tabelog's bot protection refused the page.", { url: page.url() });
     }
-    return { status: response?.status() ?? null, url: page.url(), html };
+    return { status, url: page.url(), html };
   }
 
   /** Same-origin JSON request from inside the page, so it carries the browser's cookies. */

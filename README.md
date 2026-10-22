@@ -114,7 +114,7 @@ confirm_booking(token) ──> token valid? page unchanged? ──> clicks the f
 - **Some steps are always yours.** Card entry, verification codes, and form fields it does not know return `needs_user` with the page. Call `show_booking_window` (the Chrome window comes on-screen at that step), or open the `handoff_url` in your own browser.
 - **The agent must ask you first.** The server's instructions tell it to show the summary and wait for your yes. `confirm_booking` is marked destructive, so Claude Code and other clients ask for approval before it runs. Keep it out of your auto-approve list.
 - **Narrow tools only.** No tool takes an arbitrary URL, script, or selector. Restaurant URLs must be canonical tabelog.com restaurant pages. Text on a web page cannot make the agent navigate anywhere else.
-- **The browser loads only Tabelog.** While the server drives it, the browser blocks every host except tabelog.com, its image CDN, and Google's CAPTCHA service. Ads and trackers do not load. The block lifts only while the window is on-screen for you (sign-in providers need their own sites).
+- **The browser loads only Tabelog.** While the server drives it, the browser blocks every host except tabelog.com, its image CDN, Cloudflare's visitor check, and Google's CAPTCHA service. Ads and trackers do not load. The block lifts only while the window is on-screen for you (sign-in providers need their own sites).
 
 ## What stays on your computer
 
@@ -197,7 +197,7 @@ Hosting one shared copy of this server in the cloud does not work: Tabelog block
 
 - Tabelog has no public API. The server reads Tabelog's pages and the JSON its own pages use, so a Tabelog redesign can break it. Parsers live in `src/tabelog/parse.ts` and `src/booking/page.ts`, with page snapshots in `tests/fixtures/`.
 - Japanese site only. The English site (tabelog.com/en) shows fewer open slots.
-- Requests are paced to one every 1.5 s. A burst of use can still trigger Cloudflare (`BLOCKED`); wait a few minutes.
+- Requests are paced to one every 1.5 s. Cloudflare sometimes shows new visitors a "しばらくお待ちください" check; the browser passes it on its own and the server waits up to 20 s. Heavy use can still get a temporary `BLOCKED`; in testing it cleared within about 5 minutes.
 - Automated access and booking may conflict with Tabelog's terms of use. You use it with your own account, at your own risk. Use it for your own bookings at a personal pace.
 - Cancelling or changing a booking is not supported. Do it on Tabelog.
 

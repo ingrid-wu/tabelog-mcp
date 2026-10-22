@@ -14,9 +14,14 @@ const number = (value: string): number | null => {
   return Number.isFinite(parsed) && value.trim() !== "" ? parsed : null;
 };
 
-/** Cloudflare's block page, served with HTTP 403. */
+/** Tabelog's block page, served with HTTP 403 when Cloudflare refuses a visitor. */
 export function isBlockedPage(html: string): boolean {
   return html.includes("現在アクセスが集中しています");
+}
+
+/** Cloudflare's "please wait" check, which a normal browser passes on its own within seconds. */
+export function isChallengePage(title: string): boolean {
+  return /しばらくお待ちください|Just a moment/.test(title);
 }
 
 export type LoginState = "signed_in" | "signed_out" | "unknown";
