@@ -5,6 +5,10 @@ import { BookingService } from "./booking/service.ts";
 import { BrowserSession } from "./browser/session.ts";
 import { recoveryFor, toTabelogError } from "./errors.ts";
 import { HistoryStore, purposes, toCsv } from "./history/store.ts";
+import { PreferencesStore } from "./preferences/store.ts";
+import { RestaurantFinder } from "./tabelog/finder.ts";
+import { readSession } from "./tabelog/login.ts";
+import { PlaceCache } from "./tabelog/place-cache.ts";
 import { Logger } from "./logger.ts";
 import { dataPaths } from "./paths.ts";
 import { createServer } from "./server/create-server.ts";
@@ -41,8 +45,11 @@ function dependencies() {
   });
   const history = new HistoryStore(paths.history);
   const client = new TabelogClient(browser);
-  const booking = new BookingService(browser, history, logger.child("booking"));
-  return { logger, paths, browser, history, client, booking };
+  // Long enough to scan LINE's QR code or approve on a phone; the window stays open after.
+  const booking = new BookingService(browser, history, logger.child("booking"), undefined, { sessionPath: paths.session, waitMs: 3 * 60_000 });
+  const preferences = new PreferencesStore(paths.preferences);
+  const finder = new RestaurantFinder(browser, new PlaceCache(paths.places));
+  return { logger, paths, browser, history, client, booking, preferences, finder };
 }
 
 function onShutdown(close: () => Promise<void>, { stdio = false } = {}): void {
@@ -102,9 +109,14 @@ async function main(): Promise<void> {
     }
     case "login": {
       process.stdout.write("A Chrome window opens on Tabelog's login page. Sign in there (LINE QR or Apple are quickest). Waiting up to 10 minutes…\n");
-      const state = await deps.client.login(10 * 60_000);
+      const state = await deps.client.login(10 * 60_000, deps.paths.session);
       await deps.browser.close();
-      process.stdout.write(state === "signed_in" ? "Signed in. The session is saved for the MCP server.\n" : "Not signed in. Run `tabelog-mcp login` again.\n");
+      const expires = readSession(deps.paths.session)?.expires_at;
+      process.stdout.write(
+        state === "signed_in"
+          ? `Signed in. The session is saved for the MCP server${expires ? ` and lasts until ${expires}` : ""}.\n`
+          : "Not signed in. Run `tabelog-mcp login` again.\n",
+      );
       process.exitCode = state === "signed_in" ? 0 : 1;
       return;
     }
@@ -112,7 +124,17 @@ async function main(): Promise<void> {
       const login = await deps.client.loginState();
       await deps.browser.close();
       process.stdout.write(
-        `${JSON.stringify({ version, data_directory: deps.paths.root, login, bookings_in_history: deps.history.bookings().length }, null, 2)}\n`,
+        `${JSON.stringify(
+          {
+            version,
+            data_directory: deps.paths.root,
+            login,
+            session_expires_at: readSession(deps.paths.session)?.expires_at ?? null,
+            bookings_in_history: deps.history.bookings().length,
+          },
+          null,
+          2,
+        )}\n`,
       );
       return;
     }

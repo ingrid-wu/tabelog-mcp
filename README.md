@@ -1,30 +1,43 @@
 # tabelog-mcp
 
-An MCP server that lets Claude, Codex, Cursor, or any MCP client search [Tabelog (食べログ)](https://tabelog.com), check online-booking availability, and book restaurants in Japan. It drives a real Chrome on your own computer, signed in to your own Tabelog account, and it keeps a local memory of your bookings.
+An MCP server that finds and books restaurants in Japan on [Tabelog (食べログ)](https://tabelog.com) for Claude, Codex, Cursor, or any MCP client. It is built for business dinners: a private room for the whole party, near everyone's office, on the next free evening. It drives a real Chrome on your own computer, signed in to your own Tabelog account, and keeps a local memory of your preferences and bookings.
 
-An example session (the booking details are illustrative):
+![tabelog-mcp demo: an agent calls find_available_restaurants for a private room for 7 within 15 minutes of 有楽町 and 新橋 over the next 3 days; the server fills the dinner window and private room from preferences, checks 30 candidates, and lists 5 restaurants with a room for 7, walking minutes to both stations, and open dinner times](docs/demo.gif)
 
 ```
-You: Find sushi near Ginza for 2 this Saturday around 7pm, under ¥30,000, and book the best one with a counter seat.
+You: Find a restaurant with a private room for 7 people within 15 minutes of 有楽町 and 新橋,
+     in the next 3 days, for dinner.
 
-Agent: search_restaurants(area: 銀座, keyword: 寿司, date: 2026-10-24, time: 19:00, party: 2, budget_max_yen: 30000)
-       → 126 results; はっこく 3.82 has 17:30 and 18:00 open, 19:00 full …
-       get_availability(…はっこく…, date: 2026-10-24, party: 2) → 17:30, 18:00
-       prepare_booking(…, time: 18:00, party: 2, purpose: personal)
-       → ready: はっこく, 2026年10月24日(土) 18:00, 2名, おまかせ ¥33,000, free cancellation until 10/22
+Agent: find_available_restaurants(locations: [有楽町, 新橋], party: 7)
+       defaults from preferences: 2026-10-23..25, 17:00-20:00, private room, 15 min walk
 
-Agent: Here is the booking. Shall I confirm it?
+       → 30 candidates, 20 within walking range of both, 5 with a room for 7 and open times:
+         赤坂璃宮 銀座店        3.74  中華   有楽町 6 min · 新橋 12 min   10/23 17:30-20:00, 10/24 …, 10/25 …
+         焼肉うしごろ 並木通り店 3.68  焼肉   有楽町 6 min · 新橋 15 min   10/23 17:00 17:30, 10/24 …
+         鮨 冨味               3.66  寿司   有楽町 10 min · 新橋 10 min  10/24 17:00-20:00
+         …
+
+You:   Book 鮨 冨味 on the 24th at 19:00. We usually start at 7, by the way.
+
+Agent: set_preferences(dinner_from: 18:30, dinner_to: 20:30)
+       prepare_booking(鮨 冨味, 2026-10-24, 19:00, party: 7, plan: 個室)
+       → (first time: a Chrome window opens; you sign in with LINE or Apple; it carries on)
+       → ready: summary + confirmation token
+
+Agent: Here is the booking: … Shall I confirm it?
 You:   Yes.
-Agent: confirm_booking(token) → confirmed, reservation number TB-…
+Agent: confirm_booking(token) → confirmed
 ```
+
+The search results above are real output from a run on 2026-10-22. The booking half shows the flow; see Status.
 
 ## Status
 
 | Part | State |
 | --- | --- |
-| Search, filters, restaurant details, availability, area lookup | Tested against live tabelog.com |
-| Sign-in, session reuse, history, HTTP mode, parallel-session lock | Tested |
-| Booking steps after sign-in (plan choice, guest form, confirmation, completion) | **Written defensively, not yet run on a signed-in account.** Any page it does not recognize hands the booking to you instead of guessing. |
+| `find_available_restaurants`, search, filters, restaurant details, availability, area lookup | Tested against live tabelog.com |
+| History, preferences, HTTP mode, parallel-session lock, background Chrome on macOS | Tested |
+| Sign-in and the booking steps after it (plan choice, guest form, confirmation, completion) | **Tested only against a scripted browser, not yet a signed-in account.** Any page the server does not recognize hands the booking to you instead of guessing. |
 
 ## Requirements
 
@@ -49,7 +62,7 @@ claude mcp add tabelog -- npx -y tabelog-mcp
 [mcp_servers.tabelog]
 command = "npx"
 args = ["-y", "tabelog-mcp"]
-tool_timeout_sec = 120
+tool_timeout_sec = 330
 ```
 
 **Cursor** (`~/.cursor/mcp.json`) and **Claude Desktop** (`claude_desktop_config.json`)
@@ -64,24 +77,27 @@ tool_timeout_sec = 120
 
 **From GitHub instead of npm**: replace `tabelog-mcp` with `github:ingrid-wu/tabelog-mcp` in any of the above. npm builds it on install. A private repository needs your GitHub access set up for git.
 
-Then restart the client (or run `/mcp` in Claude Code) and ask: *"Check my Tabelog status."*
+Then restart the client (or run `/mcp` in Claude Code) and ask for a dinner.
 
-## First run: sign in once
+`find_available_restaurants` can take up to 2 minutes, and a booking can wait up to 3 minutes for you to sign in. The server sends progress messages while it works. If your client still gives up early, raise its tool timeout: `tool_timeout_sec` above for Codex, or the `MCP_TOOL_TIMEOUT` environment variable (milliseconds) for Claude Code.
 
-Run this in a terminal, or ask the agent to call `tabelog_login`:
+## Signing in
 
-```bash
-npx -y tabelog-mcp login
-```
+There is no separate setup step. The first time a booking needs your account, `prepare_booking` opens a Chrome window on Tabelog's login page, waits while you sign in, and then carries on with the same booking. Searching and checking availability never need an account.
 
-A Chrome window opens on Tabelog's login page. Sign in yourself. LINE (scan the QR code with your phone) and Apple are the quickest. Google, Yahoo! JAPAN, and 価格.com ID show a CAPTCHA or ask for a code. You type every password and code yourself; the server never sees them.
+- **How to sign in:** LINE (scan the QR code with your phone) and Apple are the quickest. Google, Yahoo! JAPAN, and 価格.com ID show a CAPTCHA or ask for a code. You type every password and code yourself; the server never sees them.
+- **If you take longer than 3 minutes**, the booking returns `needs_login` and the window stays open. Finish signing in, then ask again.
+- **How long it lasts:** Tabelog does not publish how long a sign-in lasts, and it can end it early (for example when you change your password). When you sign in, the server reads the expiry date of the session cookie Tabelog sets, and `tabelog_status` shows it as `session_expires_at`. Until that date, every call reuses the session with no window. After it, the next booking opens the sign-in window again.
+- **Where it lives:** in the server's own Chrome profile on your computer (see below), not in your everyday Chrome, and never in this repository.
 
-The window closes when Tabelog shows you as signed in. Later calls reuse the session. When the session expires, a tool returns `needs_login` and you sign in again.
+To sign in ahead of time instead, run `npx -y tabelog-mcp login`.
 
 ## Tools
 
 | Tool | What it does |
 | --- | --- |
+| `find_available_restaurants` | The main search. One to four locations, walking limit, party size, the next N days (or exact dates), a seating window, private room, cuisine, budget. Returns restaurants within walking range of every location, whether a private room fits the party, and every open time in the window. Unset options come from your preferences. Takes 30 s to 2 min (faster once locations are cached). |
+| `set_preferences`, `get_preferences` | What you have told the agent (seating windows, usual party, private room, walking limit, budget, notes), and what your past bookings show. |
 | `search_restaurants` | Area, keyword, date, time, party size, online-booking-only, private room, budget, sort (rating, trend, reviews, new). Each result lists the bookable times Tabelog shows around the searched time. |
 | `find_area` | Tabelog's suggestions for a place name: stations, towns, areas. |
 | `get_restaurant` | Tabelog's information table: genre, address, hours, closed days, budget, payment, receipts (invoice number), seats, private rooms, smoking, children, dress code. |
@@ -89,10 +105,43 @@ The window closes when Tabelog shows you as signed in. Later calls reuse the ses
 | `prepare_booking` | Step 1 of 2. Fills the booking form up to the final button and returns a summary plus a confirmation token. Books nothing. |
 | `confirm_booking` | Step 2 of 2. Places the prepared booking. Marked destructive, so clients ask before running it. |
 | `show_booking_window` | Shows the Chrome window with the current booking, so you can finish it by hand. |
-| `tabelog_login`, `tabelog_status` | Sign in; check the data folder and sign-in state. |
-| `get_booking_history`, `get_preferences`, `add_booking_note` | The booking memory (see below). |
+| `tabelog_status`, `tabelog_login` | Sign-in state and expiry, data folder; optional early sign-in. |
+| `get_booking_history`, `add_booking_note` | The booking memory (see below). |
 
-Area and keyword are Japanese (銀座, 渋谷駅, 寿司, 焼肉). Agents translate English names before searching.
+Locations and keywords are Japanese (有楽町, 渋谷駅, 寿司, 焼肉). Agents translate English names before calling. Stations work best, because Tabelog gives their coordinates; `"lat,lng"` works too, alongside at least one named place.
+
+## How the business search works
+
+```
+locations ──> Tabelog's station coordinates
+      │
+      ▼
+for each location × each day: Tabelog search (online booking open, party, private room, budget)
+      │  up to 30 top-rated candidates
+      ▼
+walking time from every location, from each restaurant's map pin   (cached for 30 days)
+      │  keep those within the limit for all locations
+      ▼
+private room: does Tabelog's 個室 row list a room for the party? (6人可, 10～20人可 …)
+      │
+      ▼
+real open times for the party on each day, inside the seating window
+```
+
+- **Walking time is an estimate:** straight-line distance × 1.25 for streets, at 80 m per minute (the speed Japanese listings use). It is not transit; Tabelog has no routing.
+- **Private room** means Tabelog lists a room that fits the party. Which room you get is decided when booking: pick the 個室 plan or seat, or the restaurant assigns it.
+- **Defaults** (when the request does not say): business purpose, the next 3 days, dinner 17:00 to 20:00, lunch 11:30 to 13:30, private room for business, 15 minutes' walk.
+
+## Preferences
+
+Tell the agent how you like to book and it saves that with `set_preferences`; later searches use it as the default.
+
+- "We usually start at 7" saves a dinner window of 18:30 to 20:30.
+- "It's normally 6 of us" saves a usual party of 6.
+- "Clients are fine with a 10-minute walk" saves a 10-minute limit.
+- "Avoid 焼肉 for this client" saves a note the agent reads before suggesting.
+
+Business and personal keep separate preferences. Business is the default purpose. Anything you say in a request ("at 7:30 this time") overrides the saved default for that request only.
 
 ## How booking stays safe
 
@@ -123,7 +172,10 @@ Everything. Nothing goes to a server run by this project; there is none.
 | Data | Where | What it is |
 | --- | --- | --- |
 | `profile/` | The data folder | The Chrome profile: Tabelog's session cookies, which are your sign-in. Not your password. |
+| `session.json` | The data folder | When you signed in and when the session cookie expires |
+| `preferences.json` | The data folder | What you told the agent |
 | `history.jsonl` | The data folder | The booking memory |
+| `places.json` | The data folder | Restaurant map pins and room info, cached for 30 days |
 | `http-token` | The data folder | Bearer token for HTTP mode |
 
 The data folder is `~/Library/Application Support/tabelog-mcp` on macOS, `%APPDATA%\tabelog-mcp` on Windows, and `~/.local/share/tabelog-mcp` on Linux. Set `TABELOG_MCP_HOME` to move it. The folder is readable only by your user account. Delete it to sign out and forget everything.
@@ -207,7 +259,7 @@ Hosting one shared copy of this server in the cloud does not work: Tabelog block
 
 | Result | What to do |
 | --- | --- |
-| `needs_login` | Run `npx -y tabelog-mcp login` or ask the agent to call `tabelog_login`. |
+| `needs_login` | The sign-in window is open and waiting. Sign in there, then ask again. |
 | `needs_user` | Card, code, or an unknown form field. Call `show_booking_window` and finish in the window, or open `handoff_url`. |
 | `choose_plan` | Pick a plan from the list; call `prepare_booking` again with `plan`. |
 | `BLOCKED` | Cloudflare refused the request. Wait a few minutes. |

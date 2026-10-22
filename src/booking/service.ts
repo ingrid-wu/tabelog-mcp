@@ -4,6 +4,7 @@ import { TabelogError } from "../errors.ts";
 import { type HistoryStore, type Purpose } from "../history/store.ts";
 import type { Logger } from "../logger.ts";
 import { parseRestaurantPage, parseSlots, type RestaurantDetail } from "../tabelog/parse.ts";
+import { waitForLogin } from "../tabelog/login.ts";
 import { bookingFormUrl, parseRestaurantUrl, toSvd } from "../tabelog/urls.ts";
 import { type BookingPage, type BookingSummary, type PlanOption, readBookingPage, summaryMatchesRequest } from "./page.ts";
 
@@ -21,7 +22,7 @@ export interface BookingRequest {
 export type HandoffReason = "card_required" | "form_fields" | "summary_unverified" | "unrecognized_page" | "unexpected_completion";
 
 export type PrepareResult =
-  | { readonly status: "needs_login" }
+  | { readonly status: "needs_login"; readonly message: string }
   | { readonly status: "choose_plan"; readonly plans: readonly { label: string; price: string | null }[] }
   | {
       readonly status: "needs_user";
@@ -84,9 +85,10 @@ export class BookingService {
     private readonly history: HistoryStore,
     private readonly logger: Logger,
     private readonly now: () => Date = () => new Date(),
+    private readonly login: { readonly sessionPath: string; readonly waitMs: number } = { sessionPath: "", waitMs: 0 },
   ) {}
 
-  async prepare(request: BookingRequest): Promise<PrepareResult> {
+  async prepare(request: BookingRequest, onProgress: (message: string) => void = () => undefined): Promise<PrepareResult> {
     const ref = parseRestaurantUrl(request.restaurantUrl);
     if (request.date < todayInTokyo(this.now())) {
       throw new TabelogError("INVALID_INPUT", "date is in the past (Japan time).", { argument: "date" });
@@ -135,13 +137,31 @@ export class BookingService {
         };
       };
 
-      await browser.goto(bookingFormUrl(ref.rstId, request.date, request.time, request.party), { tab: "booking" });
+      const formUrl = bookingFormUrl(ref.rstId, request.date, request.time, request.party);
+      await browser.goto(formUrl, { tab: "booking" });
+      let triedLogin = false;
       for (let step = 0; step < maxSteps; step += 1) {
         const page: BookingPage = readBookingPage(await browser.snapshot("booking"));
         this.logger.info("booking step", { step, kind: page.kind });
         switch (page.kind) {
-          case "login_required":
-            return { status: "needs_login" };
+          case "login_required": {
+            // Signing in is part of booking, not a separate step: open the window, wait, carry on.
+            if (triedLogin || this.login.waitMs <= 0) {
+              return { status: "needs_login", message: "Sign-in did not finish. The Chrome window stays open on Tabelog's login page; sign in there, then ask again." };
+            }
+            triedLogin = true;
+            onProgress("Tabelog needs you to sign in. A Chrome window is opening; sign in there (LINE QR or Apple are quickest).");
+            const state = await waitForLogin(browser, { timeoutMs: this.login.waitMs, sessionPath: this.login.sessionPath, onProgress });
+            if (state !== "signed_in") {
+              return {
+                status: "needs_login",
+                message: "Still waiting for sign-in. The Chrome window is open on Tabelog's login page; sign in there, then ask again.",
+              };
+            }
+            onProgress("Signed in. Continuing the booking.");
+            await browser.goto(formUrl, { tab: "booking" });
+            continue;
+          }
           case "choose_plan": {
             const plan = request.plan ? choosePlan(page.plans, request.plan) : undefined;
             if (!plan) return { status: "choose_plan", plans: page.plans.map(({ label, price }) => ({ label, price })) };

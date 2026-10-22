@@ -16,7 +16,8 @@ import {
   type SearchPage,
   type TimeSlot,
 } from "./parse.ts";
-import { loginCheckUrl, loginUrl, origin, pagedListUrl, parseRestaurantUrl, type SearchQuery, searchUrl, toSvd } from "./urls.ts";
+import { waitForLogin } from "./login.ts";
+import { loginCheckUrl, pagedListUrl, parseRestaurantUrl, type SearchQuery, searchUrl, toSvd } from "./urls.ts";
 
 export interface SearchRequest extends Omit<SearchQuery, "area"> {
   /** A Japanese place name, resolved through Tabelog's own area suggestions. */
@@ -104,33 +105,7 @@ export class TabelogClient {
     return this.browser.exclusive(async (browser) => parseLoginState((await browser.goto(loginCheckUrl)).html));
   }
 
-  /**
-   * Shows the browser on Tabelog's login page and waits until the session is
-   * signed in, or until the timeout. The user signs in themselves; this code
-   * never sees or types credentials.
-   */
-  login(timeoutMs: number): Promise<LoginState> {
-    return this.browser.exclusive(async (browser) => {
-      await browser.show(loginUrl);
-      const deadline = Date.now() + timeoutMs;
-      try {
-        let checkedAt: string | null = null;
-        while (Date.now() < deadline) {
-          await new Promise((resolve) => setTimeout(resolve, 3_000));
-          const url = browser.currentUrl() ?? "";
-          // Tabelog sends the user back to tabelog.com after the provider's sign-in.
-          if (!url.startsWith(origin) || url.includes("/account/") || url === checkedAt) continue;
-          let state = parseLoginState((await browser.snapshot()).html);
-          if (state === "unknown") {
-            state = parseLoginState((await browser.goto(loginCheckUrl)).html);
-          }
-          if (state === "signed_in") return state;
-          checkedAt = browser.currentUrl();
-        }
-        return "signed_out";
-      } finally {
-        await browser.hide();
-      }
-    });
+  login(timeoutMs: number, sessionPath: string, onProgress?: (message: string) => void): Promise<LoginState> {
+    return this.browser.exclusive((browser) => waitForLogin(browser, { timeoutMs, sessionPath, ...(onProgress ? { onProgress } : {}) }));
   }
 }

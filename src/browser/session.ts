@@ -149,6 +149,13 @@ export class BrowserSession {
     await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => undefined);
   }
 
+  /** tabelog.com cookies with their expiry (seconds since epoch; -1 for session cookies). Values are never read out. */
+  async cookieExpiries(): Promise<{ name: string; expires: number }[]> {
+    await this.ensurePage("browse");
+    const cookies = (await this.context?.cookies(origin)) ?? [];
+    return cookies.map((cookie) => ({ name: cookie.name, expires: cookie.expires }));
+  }
+
   currentUrl(tab: Tab = "browse"): string | null {
     return this.pages.get(tab)?.url() ?? null;
   }

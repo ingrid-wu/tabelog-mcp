@@ -20,6 +20,9 @@ export interface DataPaths {
   readonly profile: string;
   readonly history: string;
   readonly httpToken: string;
+  readonly session: string;
+  readonly preferences: string;
+  readonly places: string;
 }
 
 export function dataPaths(root = dataDirectory()): DataPaths {
@@ -28,5 +31,8 @@ export function dataPaths(root = dataDirectory()): DataPaths {
     profile: join(root, "profile"),
     history: join(root, "history.jsonl"),
     httpToken: join(root, "http-token"),
+    session: join(root, "session.json"),
+    preferences: join(root, "preferences.json"),
+    places: join(root, "places.json"),
   };
 }

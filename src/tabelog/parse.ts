@@ -116,6 +116,8 @@ export interface RestaurantDetail {
   readonly rst_id: string;
   readonly name: string;
   readonly score: number | null;
+  /** From the page's print link; null if Tabelog has no map pin for the restaurant. */
+  readonly location: { readonly lat: number; readonly lng: number } | null;
   /** The restaurant information table, label to text: 予約可否, 営業時間, 予算, 個室, 支払い方法, … */
   readonly info: Readonly<Record<string, string>>;
   readonly online_booking: boolean;
@@ -138,10 +140,12 @@ export function parseRestaurantPage(html: string, rstId: string): RestaurantDeta
   const name = info.店名 ?? text(root.querySelector(".display-name")) ?? "";
   if (!name) throw new TabelogError("PAGE_CHANGED", "The restaurant page had no name.", { stage: "restaurant_info" });
   const bookingParams = root.getElementById("js-booking-params");
+  const pin = /rstdtl_print\?lat=(-?\d+(?:\.\d+)?)&(?:amp;)?lng=(-?\d+(?:\.\d+)?)/.exec(html);
   return {
     rst_id: rstId,
     name,
     score: number(text(root.querySelector(".rdheader-rating__score-val-dtl"))),
+    location: pin ? { lat: Number(pin[1]), lng: Number(pin[2]) } : null,
     info,
     online_booking: bookingParams?.getAttribute("data-booking-enabled") === "1",
   };
@@ -212,13 +216,29 @@ export interface AreaSuggestion {
   /** RailroadStation, Town, Area, … as Tabelog labels it. */
   readonly datatype: string;
   readonly id: number;
+  /** Stations carry coordinates; towns usually do not. */
+  readonly lat?: number;
+  readonly lng?: number;
 }
 
 export function parseAreaSuggestions(json: unknown): AreaSuggestion[] {
   if (json && typeof json === "object" && "suggest_empty" in json) return [];
   const parsed = z
-    .array(z.object({ name: z.string(), datatype: z.string(), id_in_datatype: z.number() }))
+    .array(
+      z.object({
+        name: z.string(),
+        datatype: z.string(),
+        id_in_datatype: z.number(),
+        lat: z.number().nullable().optional(),
+        lng: z.number().nullable().optional(),
+      }),
+    )
     .safeParse(json);
   if (!parsed.success) throw new TabelogError("PAGE_CHANGED", "Tabelog's area suggestions changed shape.", { stage: "area" });
-  return parsed.data.map((entry) => ({ name: entry.name, datatype: entry.datatype, id: entry.id_in_datatype }));
+  return parsed.data.map((entry) => ({
+    name: entry.name,
+    datatype: entry.datatype,
+    id: entry.id_in_datatype,
+    ...(typeof entry.lat === "number" && typeof entry.lng === "number" ? { lat: entry.lat, lng: entry.lng } : {}),
+  }));
 }

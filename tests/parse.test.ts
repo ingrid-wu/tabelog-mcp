@@ -53,6 +53,7 @@ describe("restaurant page (焼肉うしごろ 銀座店)", () => {
     expect(detail.info.住所).toMatch(/^東京都中央区銀座1-8-19/);
     expect(detail.info.住所).not.toContain("大きな地図を見る");
     expect(detail.online_booking).toBe(true);
+    expect(detail.location).toEqual({ lat: 35.67436693791574, lng: 139.7687324831517 });
   });
 
   test("leaves out noise rows", () => {
@@ -93,7 +94,7 @@ describe("availability JSON", () => {
 describe("area suggestions", () => {
   test("銀座 resolves to the station first, then towns", () => {
     const areas = parseAreaSuggestions(json("suggest-ginza.json"));
-    expect(areas[0]).toEqual({ name: "銀座駅", datatype: "RailroadStation", id: 3368 });
+    expect(areas[0]).toEqual({ name: "銀座駅", datatype: "RailroadStation", id: 3368, lat: 35.66865555555555, lng: 139.7673638888889 });
     expect(areas.some((area) => area.datatype === "Town")).toBe(true);
   });
 

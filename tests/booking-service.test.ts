@@ -18,6 +18,8 @@ const confirmPage = (party = 2) =>
   wrap(`<table><tr><th>来店日時</th><td>2026年10月24日(土) 16:00</td></tr><tr><th>人数</th><td>${party}名</td></tr></table>
   <button>予約を確定する</button>`);
 const completePage = wrap(`<h1>予約が完了しました</h1><p>予約番号：TB-0001</p>`);
+const loginRequiredPage = wrap(`<p>ご利用にはログインが必要です</p>`);
+const signedInPage = (signedIn: boolean) => `<div id="js-login-request" data-user-login="${signedIn ? "true" : "false"}"></div>`;
 
 /** A scripted browser: each click advances to the next page. Records every click. */
 class FakeBrowser {
@@ -25,29 +27,47 @@ class FakeBrowser {
   pages: string[] = [];
   index = 0;
   slots = [{ time: "11:30" }, { time: "16:00" }];
+  /** Set by show(): the user signs in, so the next look at tabelog.com is signed in. */
+  signedIn = false;
+  shown = false;
+  userSignsIn = true;
 
   exclusive<T>(operation: (session: this) => Promise<T>): Promise<T> {
     return operation(this);
   }
   async goto(url: string) {
-    if (url === restaurantUrl) return { status: 200, url, html: restaurantHtml };
-    this.index = 0;
-    return { status: 200, url: this.url(), html: this.pages[0] ?? "" };
+    if (url === restaurantUrl) {
+      // The restaurant page is also where the server checks sign-in.
+      const html = this.signedIn ? restaurantHtml.replace('data-user-login="false"', 'data-user-login="true"') : restaurantHtml;
+      return { status: 200, url, html };
+    }
+    if (!url.includes("/booking/")) return { status: 200, url, html: signedInPage(this.signedIn) };
+    // A fresh booking form: past the login page once signed in.
+    this.index = this.signedIn && this.pages[0]?.includes("ログインが必要") ? 1 : 0;
+    return { status: 200, url: this.url(), html: this.pages[this.index] ?? "" };
   }
   async fetchJson() {
     return { selection: Object.fromEntries(this.slots.map((slot, i) => [String(i), { time: slot.time, url: "/booking/form/new" }])) };
   }
-  async snapshot() {
+  async snapshot(tab = "browse") {
+    if (tab === "browse") return { url: "https://tabelog.com/", html: signedInPage(this.signedIn), missingRequired: [] };
     return { url: this.url(), html: this.pages[this.index] ?? "", missingRequired: [] };
   }
   async click(button: { text: string }) {
     this.clicks.push(button.text);
     this.index += 1;
   }
-  currentUrl() {
-    return this.url();
+  currentUrl(tab = "browse") {
+    return tab === "browse" ? (this.shown ? "https://tabelog.com/" : "https://tabelog.com/account/login/") : this.url();
   }
-  async show() {}
+  async show() {
+    this.shown = true;
+    if (this.userSignsIn) this.signedIn = true;
+  }
+  async hide() {}
+  async cookieExpiries() {
+    return this.signedIn ? [{ name: "auth", expires: Date.parse("2027-04-22T00:00:00Z") / 1_000 }] : [];
+  }
   private url() {
     return `https://tabelog.com/booking/step/${this.index}`;
   }
@@ -59,12 +79,37 @@ let browser: FakeBrowser;
 let history: HistoryStore;
 let clock: Date;
 let service: BookingService;
+let sessionPath: string;
 
 beforeEach(() => {
   browser = new FakeBrowser();
-  history = new HistoryStore(join(mkdtempSync(join(tmpdir(), "tabelog-test-")), "history.jsonl"), () => clock);
+  const directory = mkdtempSync(join(tmpdir(), "tabelog-test-"));
+  history = new HistoryStore(join(directory, "history.jsonl"), () => clock);
+  sessionPath = join(directory, "session.json");
   clock = new Date("2026-10-22T12:00:00+09:00");
-  service = new BookingService(browser as unknown as BrowserSession, history, new Logger("error"), () => clock);
+  service = new BookingService(browser as unknown as BrowserSession, history, new Logger("error"), () => clock, { sessionPath, waitMs: 5_000 });
+});
+
+describe("signing in", () => {
+  test("a booking that needs sign-in opens the window, waits, and carries on to the summary", async () => {
+    browser.pages = [loginRequiredPage, confirmPage()];
+    const messages: string[] = [];
+    const result = await service.prepare(request, (message) => messages.push(message));
+    expect(browser.shown).toBe(true);
+    expect(result.status).toBe("ready");
+    expect(messages.some((message) => message.includes("sign in"))).toBe(true);
+    // Tabelog's new session cookie sets how long the sign-in lasts.
+    expect(JSON.parse(readFileSync(sessionPath, "utf8")).expires_at).toBe("2027-04-22T00:00:00.000Z");
+  });
+
+  test("if the user does not finish in time, it says the window is waiting", async () => {
+    browser.pages = [loginRequiredPage, confirmPage()];
+    browser.userSignsIn = false;
+    service = new BookingService(browser as unknown as BrowserSession, history, new Logger("error"), () => clock, { sessionPath, waitMs: 2_500 });
+    const result = await service.prepare(request);
+    expect(result).toMatchObject({ status: "needs_login" });
+    expect(browser.clicks).toEqual([]);
+  }, 10_000);
 });
 
 describe("prepare_booking", () => {
