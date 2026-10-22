@@ -3,8 +3,12 @@
 // browsers, so the window is visible but placed off-screen; it comes on-screen
 // only when the user must act (sign in, solve a check, enter a card).
 
-import { mkdirSync } from "node:fs";
-import { type BrowserContext, chromium, type Page, type Route } from "playwright-core";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, readlinkSync } from "node:fs";
+import { createServer } from "node:net";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { type Browser, type BrowserContext, chromium, type Page, type Route } from "playwright-core";
 import { TabelogError } from "../errors.ts";
 import type { Logger } from "../logger.ts";
 import { isBlockedPage, isChallengePage } from "../tabelog/parse.ts";
@@ -52,6 +56,8 @@ export interface BrowserSessionOptions {
 
 export class BrowserSession {
   private context: BrowserContext | null = null;
+  /** Set when Chrome was started separately and attached over CDP (macOS). */
+  private attached: Browser | null = null;
   private readonly pages = new Map<Tab, Page>();
   private visible = false;
   private queue: Promise<unknown> = Promise.resolve();
@@ -169,8 +175,16 @@ export class BrowserSession {
   async close(): Promise<void> {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     const context = this.context;
+    const attached = this.attached;
     this.context = null;
+    this.attached = null;
     this.pages.clear();
+    if (attached) {
+      // Disconnecting leaves an attached Chrome running; ask it to quit.
+      const cdp = await attached.newBrowserCDPSession().catch(() => null);
+      await cdp?.send("Browser.close").catch(() => undefined);
+      return;
+    }
     await context?.close().catch(() => undefined);
   }
 
@@ -187,9 +201,77 @@ export class BrowserSession {
 
   private async launch(): Promise<BrowserContext> {
     mkdirSync(this.options.profileDirectory, { recursive: true, mode: 0o700 });
-    let context: BrowserContext;
+    if (profileInUse(this.options.profileDirectory)) {
+      throw new TabelogError("BROWSER_BUSY", "Another tabelog-mcp process is using the browser profile.");
+    }
+    const appBundle = process.platform === "darwin" ? macChromeApp(this.options.executablePath) : null;
+    const context = appBundle ? await this.launchInBackground(appBundle) : await this.launchWithPlaywright();
+    await context.route("**/*", (route) => this.filter(route));
+    context.on("close", () => {
+      this.context = null;
+      this.pages.clear();
+    });
+    this.options.logger.info("browser started", { background: appBundle !== null });
+    return context;
+  }
+
+  /**
+   * macOS brings an app Playwright launches to the front, pulling the user to
+   * whatever desktop it opens on. `open -g` starts Chrome without activating
+   * it; Playwright then attaches over the DevTools port, bound to loopback.
+   */
+  private async launchInBackground(appBundle: string): Promise<BrowserContext> {
+    const port = await freePort();
+    const args = [
+      `--user-data-dir=${this.options.profileDirectory}`,
+      `--remote-debugging-port=${port}`,
+      "--remote-debugging-address=127.0.0.1",
+      `--window-position=${offScreen.left},${offScreen.top}`,
+      `--window-size=${windowSize.width},${windowSize.height}`,
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--lang=ja-JP",
+      // Chrome activates itself when it opens a window at launch; open none, then add one in the background.
+      "--no-startup-window",
+    ];
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn("open", ["-g", "-n", "-a", appBundle, "--args", ...args], { stdio: "ignore" });
+      child.once("error", reject);
+      child.once("exit", (code) => (code === 0 ? resolve() : reject(new Error(`open exited with code ${code}`))));
+    });
+    const endpoint = `http://127.0.0.1:${port}`;
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      try {
+        const response = await fetch(`${endpoint}/json/version`);
+        if (response.ok) break;
+      } catch {
+        // Not listening yet.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    const browser = await chromium.connectOverCDP(endpoint, { timeout: 10_000 }).catch(() => {
+      throw new TabelogError("BROWSER_BUSY", "Chrome started but did not open its control port; another Chrome may hold the profile.");
+    });
+    browser.on("disconnected", () => {
+      this.attached = null;
+      this.context = null;
+      this.pages.clear();
+    });
+    this.attached = browser;
+    const context = browser.contexts()[0];
+    if (!context) throw new TabelogError("UNEXPECTED", "Chrome started without a browser context.");
+    const cdp = await browser.newBrowserCDPSession();
+    const opened = context.waitForEvent("page", { timeout: 10_000 });
+    await cdp.send("Target.createTarget", { url: "about:blank", newWindow: true, background: true });
+    await opened;
+    await cdp.detach().catch(() => undefined);
+    return context;
+  }
+
+  private async launchWithPlaywright(): Promise<BrowserContext> {
     try {
-      context = await chromium.launchPersistentContext(this.options.profileDirectory, {
+      return await chromium.launchPersistentContext(this.options.profileDirectory, {
         ...(this.options.executablePath ? { executablePath: this.options.executablePath } : { channel: "chrome" }),
         headless: false,
         args: [`--window-position=${offScreen.left},${offScreen.top}`, `--window-size=${windowSize.width},${windowSize.height}`],
@@ -207,13 +289,6 @@ export class BrowserSession {
       }
       throw error;
     }
-    await context.route("**/*", (route) => this.filter(route));
-    context.on("close", () => {
-      this.context = null;
-      this.pages.clear();
-    });
-    this.options.logger.info("browser started");
-    return context;
   }
 
   private filter(route: Route): Promise<void> {
@@ -254,4 +329,41 @@ export class BrowserSession {
     }, this.options.idleCloseMs ?? 10 * 60_000);
     this.idleTimer.unref();
   }
+}
+
+/** The Chrome .app bundle to start in the background, or null to let Playwright launch a bare binary. */
+function macChromeApp(executablePath: string | undefined): string | null {
+  if (executablePath) {
+    const bundle = /^(.*?\.app)(\/|$)/.exec(executablePath)?.[1];
+    return bundle && existsSync(bundle) ? bundle : null;
+  }
+  for (const candidate of ["/Applications/Google Chrome.app", join(homedir(), "Applications", "Google Chrome.app")]) {
+    if (existsSync(candidate)) return candidate;
+  }
+  throw new TabelogError("CHROME_NOT_FOUND", "Google Chrome is not installed in /Applications or ~/Applications.");
+}
+
+/** Chrome's SingletonLock names the host and pid holding a profile. */
+function profileInUse(profileDirectory: string): boolean {
+  try {
+    const pid = Number(/-(\d+)$/.exec(readlinkSync(join(profileDirectory, "SingletonLock")))?.[1]);
+    if (!pid) return false;
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    // No lock, or a stale lock whose process is gone.
+    return false;
+  }
+}
+
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      server.close(() => resolve(port));
+    });
+  });
 }

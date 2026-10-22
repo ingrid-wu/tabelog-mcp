@@ -31,7 +31,7 @@ Agent: confirm_booking(token) → confirmed, reservation number TB-…
 - **Node.js 20.10 or newer.** `npx` comes with it.
 - **Google Chrome**, installed normally. Set `TABELOG_MCP_CHROME` to use another Chrome or Chromium binary.
 - **A Tabelog account** (free). Tabelog signs in through LINE, Apple, Google, Yahoo! JAPAN, docomo, au, SoftBank, X, or a 価格.com ID.
-- **A desktop session.** Tabelog's Japanese site blocks headless browsers, so the server runs a real Chrome window and parks it off-screen. It works on macOS, Windows, and Linux with a display. It does not work on a server without one.
+- **A desktop session.** Tabelog's Japanese site blocks headless browsers, so the server runs a real Chrome window and parks it off-screen. On macOS it starts Chrome in the background, so it never takes focus or switches your desktop; the window comes forward only for sign-in or a handoff. It works on macOS, Windows, and Linux with a display. It does not work on a server without one.
 
 ## Install
 
@@ -186,6 +186,8 @@ claude mcp add --transport http tabelog http://127.0.0.1:3217/mcp \
 ```
 
 HTTP mode listens on loopback only, requires the bearer token on every request, and rejects requests from web pages on other origins.
+
+On macOS the server controls its Chrome through a DevTools port on 127.0.0.1 (a random port, open only while that Chrome runs). Other programs running as you on the same computer could reach that port; nothing off the computer can.
 
 ## ChatGPT
 
